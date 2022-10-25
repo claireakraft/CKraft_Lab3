@@ -36,6 +36,8 @@ BLE &bleinit= BLE::Instance();
 Gap& gap = bleinit.gap();
 GattServer& gattServe = bleinit.gattServer();
 GattClient& gattClient = bleinit.gattClient();
+//USBSerial SERIAL;
+
 
 int16_t TOUT =0;
 
@@ -49,10 +51,58 @@ struct GapEventHandler : Gap::EventHandler{
 	 * Implement the functions here that you think you'll need. These are defined in the GAP EventHandler:
      * https://os.mbed.com/docs/mbed-os/v6.6/mbed-os-api-doxy/structble_1_1_gap_1_1_event_handler.html
      */
+    void onAdvertisingStart (const AdvertisingStartEvent &event) {
+        ser.printf("Advertising started\r\n");
+    }
+    void onAdvertisingEnd (const AdvertisingEndEvent &event){
+        int Status = event.getStatus();
+        if (Status == BLE_ERROR_TIMEOUT){
+            ser.printf("Advertising ended because couldn't find a device\r\n");
+        }
+        else if(Status == BLE_ERROR_NONE){
+            ser.printf("Advertising ended because device connected\r\n");
+        }
+        else if(Status == BLE_ERROR_NONE){
+            ser.printf("Advertising ended because device connected\r\n");
+        }
+        else{
+            ser.printf("Advertising Ended\r\n");
+        }
+        
+
+    }
+    void onConnectionComplete (const ConnectionCompleteEvent &event){
+        ser.printf("Bluetooth Connected\r\n");
+        gap.stopAdvertising(LEGACY_ADVERTISING_HANDLE);
+
+    }
+    void onDisconnectionComplete (const DisconnectionCompleteEvent &event){
+        gap.startAdvertising(LEGACY_ADVERTISING_HANDLE,adv_duration_t::forever(),0);
+    }
 };
 
 
 GapEventHandler THE_gap_EvtHandler;
+
+
+void setupAdvertisingData(){
+    using namespace ble;
+    if (BLE_ERROR_NONE != gap.setAdvertisingPayload(
+        LEGACY_ADVERTISING_HANDLE,
+        AdvertisingDataSimpleBuilder<LEGACY_ADVERTISING_MAX_SIZE>()
+            .setFlags()
+            .setName("Clur's chip", true)
+            .setAppearance(adv_data_appearance_t::GENERIC_HEART_RATE_SENSOR)
+            .setLocalService(ATT_UUID_HEART_RATE_SERVICE)
+            .getAdvertisingData())){
+                ser.printf("Error in Advertising\r\n");
+            }
+    else{
+        gap.startAdvertising(LEGACY_ADVERTISING_HANDLE,adv_duration_t::forever(),0);	
+        gap.setEventHandler(&THE_gap_EvtHandler);
+    }
+
+}
 
 
 void measure_temp(){
@@ -112,11 +162,23 @@ void measure_temp(){
 
 void on_init_complete(BLE::InitializationCompleteCallbackContext *params){
 
-}
+    if(params->error == BLE_ERROR_NONE){
+        ser.printf("Initialization complete\r\n");
+    }
+    else{
+        ser.printf("Error with Initialization\r\n");
+    }
+    setupAdvertisingData();
+
+    int test[1];
+    UUID uuid = UUID(1);	
+    test[0]=1234;
+    ReadOnlyGattCharacteristic<int>(uuid, test);
 
 /* Schedule processing of events from the BLE middleware in the event queue. */
 void schedule_ble_events(BLE::OnEventsToProcessCallbackContext *context){
     event_queue.call(mbed::Callback<void()>(&context->ble, &BLE::processEvents));
+
 }
 
 
@@ -125,6 +187,8 @@ int main(){
     i2cbuspull.write(1);
     DigitalOut sensor_pwr(P0_22); // Supply power to all of the sensors (VCC)
     sensor_pwr.write(1);
+
+    bleinit.init(on_init_complete);
 
     bleinit.onEventsToProcess(schedule_ble_events);
    
