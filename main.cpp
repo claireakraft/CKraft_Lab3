@@ -29,6 +29,7 @@
 USBSerial ser;
 
 Thread tempthread;
+const UUID uuid = 0x78;
 
 static events::EventQueue event_queue(16 * EVENTS_EVENT_SIZE);
 
@@ -36,7 +37,7 @@ BLE &bleinit= BLE::Instance();
 Gap& gap = bleinit.gap();
 GattServer& gattServe = bleinit.gattServer();
 GattClient& gattClient = bleinit.gattClient();
-//USBSerial SERIAL;
+GattAttribute::Handle_t Hvalue;
 
 
 int16_t TOUT =0;
@@ -51,9 +52,12 @@ struct GapEventHandler : Gap::EventHandler{
 	 * Implement the functions here that you think you'll need. These are defined in the GAP EventHandler:
      * https://os.mbed.com/docs/mbed-os/v6.6/mbed-os-api-doxy/structble_1_1_gap_1_1_event_handler.html
      */
+     //once advertising starts print out that it has started
     void onAdvertisingStart (const AdvertisingStartEvent &event) {
         ser.printf("Advertising started\r\n");
     }
+
+    // once advertising has ending get the status of why it stopped and print why 
     void onAdvertisingEnd (const AdvertisingEndEvent &event){
         int Status = event.getStatus();
         if (Status == BLE_ERROR_TIMEOUT){
@@ -62,20 +66,21 @@ struct GapEventHandler : Gap::EventHandler{
         else if(Status == BLE_ERROR_NONE){
             ser.printf("Advertising ended because device connected\r\n");
         }
-        else if(Status == BLE_ERROR_NONE){
-            ser.printf("Advertising ended because device connected\r\n");
-        }
-        else{
-            ser.printf("Advertising Ended\r\n");
+        else if(Status == BLE_ERROR_NOT_FOUND){
+            ser.printf("Advertising ended unknown error\r\n");
         }
         
 
     }
+    
+    // once the bluetooth is connected, print that is has been connected and turn off advertising
     void onConnectionComplete (const ConnectionCompleteEvent &event){
         ser.printf("Bluetooth Connected\r\n");
         gap.stopAdvertising(LEGACY_ADVERTISING_HANDLE);
 
     }
+
+    // once bluetooth is disconnected, turn on advertising
     void onDisconnectionComplete (const DisconnectionCompleteEvent &event){
         gap.startAdvertising(LEGACY_ADVERTISING_HANDLE,adv_duration_t::forever(),0);
     }
@@ -87,17 +92,19 @@ GapEventHandler THE_gap_EvtHandler;
 
 void setupAdvertisingData(){
     using namespace ble;
+    // set up advertising and if there is an error in set up print that there was an error
     if (BLE_ERROR_NONE != gap.setAdvertisingPayload(
         LEGACY_ADVERTISING_HANDLE,
         AdvertisingDataSimpleBuilder<LEGACY_ADVERTISING_MAX_SIZE>()
             .setFlags()
             .setName("Clur's chip", true)
-            .setAppearance(adv_data_appearance_t::GENERIC_HEART_RATE_SENSOR)
-            .setLocalService(ATT_UUID_HEART_RATE_SERVICE)
+            .setAppearance(adv_data_appearance_t::GENERIC_THERMOMETER)
+            .setLocalService(ATT_UUID_HEALTH_THERM_SERVICE)
             .getAdvertisingData())){
                 ser.printf("Error in Advertising\r\n");
             }
     else{
+        // if the advertising was set up correctly, then start advertising and set the event handler
         gap.startAdvertising(LEGACY_ADVERTISING_HANDLE,adv_duration_t::forever(),0);	
         gap.setEventHandler(&THE_gap_EvtHandler);
     }
@@ -106,7 +113,9 @@ void setupAdvertisingData(){
 
 
 void measure_temp(){
-    I2C sensor_bus(I2C_SDA1, I2C_SCL1);
+
+    // measuring temperature thread given to us
+    I2C sensor_bus(p31, p2);
 
     const int readaddr = 0xEF;
     const int writeaddr = 0xEE;
@@ -157,24 +166,50 @@ void measure_temp(){
 
         // Sleep for a while.
         thread_sleep_for(5000);
+        uint8_t x;
+        uint8_t databuf2[2];
+
+        // if the handle has been set than write temperature values to it 
+        if(Hvalue){
+            databuf2[0] = databuf[1];
+            databuf2[1] = databuf[0];
+            x = gattServe.write(Hvalue, databuf2, 2);
+            // if there is an error n writing to the handle then print that there has been an error
+            if(x != BLE_ERROR_NONE){
+           ser.printf("Error writing the Temperature to the chip!!"); 
+            }
+        }
+        
+
     }
 }
 
 void on_init_complete(BLE::InitializationCompleteCallbackContext *params){
-
+    // if initialization successful print that and if error print that 
     if(params->error == BLE_ERROR_NONE){
         ser.printf("Initialization complete\r\n");
     }
     else{
         ser.printf("Error with Initialization\r\n");
     }
+
+    // call function to start advertising 
     setupAdvertisingData();
 
-    int test[1];
-    UUID uuid = UUID(1);	
+    // create characteristic with random UUID and random starting value and to be adle to read and indicate
+    int test[1];	
     test[0]=1234;
-    ReadOnlyGattCharacteristic<int>(uuid, test);
+    ReadOnlyGattCharacteristic<int> tempc(uuid, test, GattCharacteristic::BLE_GATT_CHAR_PROPERTIES_READ|GattCharacteristic::BLE_GATT_CHAR_PROPERTIES_INDICATE);
+    // create GATT service and add GATT characteristic to the GATT service
+    GattCharacteristic *character[] = {&tempc};
+    GattService gservice(ATT_UUID_HEALTH_THERM_SERVICE, character, 1);
+    // add the service to the chips GATT server
+    gattServe.addService(gservice);
 
+    // get handle once the characteristic is added to the service
+    Hvalue = tempc.getValueHandle();
+
+}
 /* Schedule processing of events from the BLE middleware in the event queue. */
 void schedule_ble_events(BLE::OnEventsToProcessCallbackContext *context){
     event_queue.call(mbed::Callback<void()>(&context->ble, &BLE::processEvents));
@@ -191,8 +226,8 @@ int main(){
     bleinit.init(on_init_complete);
 
     bleinit.onEventsToProcess(schedule_ble_events);
-   
-
+    // start the reading temperature thread 
+    tempthread.start(measure_temp);
     // This will never return...
     event_queue.dispatch_forever();
 }
